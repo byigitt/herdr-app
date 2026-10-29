@@ -7,7 +7,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { commands, layouts, keys, run, theme, props, closeOverlay, openOverlay, shared, window as win } from "herdr";
+import { commands, layouts, keys, run, theme, props, closeOverlay, openOverlay, shared, appHome, readTextFile, writeTextFile, window as win } from "herdr";
 
 // The list keeps one height while you move: rows and group titles have fixed
 // heights, and the window shows as many as fit in LIST_H.
@@ -62,6 +62,9 @@ const NAMED = [
   ...["graphite", "ink", "moss", "atom-one-dark"].map((n) => ["app.theme", { name: n }, "App", `Theme: ${n.replace(/-/g, " ")}`, "colors look"]),
 ];
 
+// Light or dark: settings.json's `appearance` (null: the system's), not a command.
+const APPEARANCES = [["light", "Light"], ["dark", "Dark"], [null, "System"]];
+
 // Commands that act on something you point at (ids, terminals): not for a list.
 const HIDDEN = new Set([
   "space.move", "tab.move", "space.select", "tab.select", "pane.focus", "terminal.keep",
@@ -86,6 +89,9 @@ function entries() {
   for (const l of layouts()) {
     const t = { main: "Herdr", terminals: "Terminals", win98: "Herdr 98" }[l] ?? l.charAt(0).toUpperCase() + l.slice(1);
     list.push({ name: "layout.switch", args: { name: l }, group: "Layout", title: `Layout: ${t}`, words: `look ${l}` });
+  }
+  for (const [value, label] of APPEARANCES) {
+    list.push({ name: "appearance", args: { value }, group: "App", title: `Appearance: ${label}`, words: "light dark mode system look" });
   }
   // Anything new in the app shows up too, until it gets a better name here.
   const named = new Set(NAMED.map(([n]) => n));
@@ -133,7 +139,7 @@ export default class Palette extends View {
     this.query = "";
     this.input = InputState.new({ placeholder: "Type a command…" });
     this.input.on("change", (_e, cx) => { this.query = this.input.value(); this.at = 0; cx.notify(); });
-    this.input.on("submit", () => this.go(this.rows()[this.at]?.e));
+    this.input.on("submit", (_e, cx) => this.go(this.rows()[this.at]?.e, cx));
     this.input.focus();
     cx.timer.after(600, () => this.input.focus());
     this.at = 0;
@@ -147,10 +153,11 @@ export default class Palette extends View {
     closeOverlay(props().overlay);
   }
 
-  go(e) {
+  go(e, cx) {
     if (!e) return;
     this.recent = [e.id, ...this.recent.filter((r) => r !== e.id)].slice(0, 20);
     localStorage.setItem("recent", JSON.stringify(this.recent));
+    if (e.name === "appearance") return this.setAppearance(e.args.value, cx);
     this.close();
     if (e.name === "mod.clone") {
       openOverlay({ mod: "prompt", kind: "dialog", width: 380, props: {
@@ -160,6 +167,30 @@ export default class Palette extends View {
     } else {
       run(e.name, e.name === "layout.clone" ? { name: shared("layout") ?? "main" } : e.args);
     }
+  }
+
+  // Writes settings.json as Settings does: only if nobody changed it meanwhile
+  // (else read again and redo). Closes after, so the write isn't cut short.
+  setAppearance(value, cx) {
+    cx.spawn(async () => {
+      const file = `${appHome()}/settings.json`;
+      for (let i = 0; i < 3; i++) {
+        const raw = await readTextFile(file);
+        let p = {};
+        try {
+          p = raw ? JSON.parse(raw) : {};
+        } catch {
+          break;
+        }
+        if (value === null) delete p.appearance;
+        else p.appearance = value;
+        try {
+          await writeTextFile(file, JSON.stringify(p, null, 2) + "\n", raw);
+          break;
+        } catch {}
+      }
+      this.close();
+    });
   }
 
   // The rows to show: grouped when empty, ranked while typing.
@@ -257,7 +288,7 @@ export default class Palette extends View {
           .text_size(12.8)
           .when(on, (el) => el.bg(t.selected))
           .hover((s) => s.bg(t.hover))
-          .on_click(() => this.go(r.e))
+          .on_click((_e, cx) => this.go(r.e, cx))
           .child(div().flex_1().min_w(0).child(this.title(t, r.e.title, r.hits, on)))
           .when(Boolean(this.query), (el) => el.child(div().text_size(11.5).text_color(t.dim).child(r.e.group)))
           .when(Boolean(k), (el) => el.child(key(k))),

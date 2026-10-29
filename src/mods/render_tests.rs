@@ -407,7 +407,7 @@ fn local_state_and_overlay_initial_descriptions(cx: &mut TestAppContext) {
             );
         }
     }
-    for query in ["settings", "no-such-command"] {
+    for (query, expected) in [("settings", "Settings"), ("light", "Appearance: Light"), ("no-such-command", "Nothing matches")] {
         let tree = describe(
             cx,
             &staged,
@@ -419,7 +419,6 @@ fn local_state_and_overlay_initial_descriptions(cx: &mut TestAppContext) {
         )
         .unwrap();
         // The query sits in a native text field; what the list shows tells it apart.
-        let expected = if query == "settings" { "Settings" } else { "Nothing matches" };
         assert!(tree.contains(expected), "palette query {query}: {tree}");
     }
     // Reviewed overlay contract table, not extracted from arbitrary JS call sites.

@@ -573,7 +573,8 @@ What's about the user, never a look:
 - `colors`: theme color overrides (`{"accent":"#ff8800"}`), with the same
   precedence as fonts.
 - `appearance`: `"light"` or `"dark"` always; absent, the system's. A layout
-  with a light and a dark theme shows the matching one.
+  with a light and a dark theme shows the matching one. The palette's
+  Appearance: Light / Dark / System entries write it.
 - Updates: an installed app downloads them by itself and offers Restart and
   What changed. The first start after an app update also updates herdr-core
   to the latest release of the same generation, keeping terminals running.
