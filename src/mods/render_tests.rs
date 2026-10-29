@@ -218,12 +218,29 @@ fn describe(
     update: Value,
     setup: Option<&str>,
 ) -> anyhow::Result<String> {
+    describe_with(cx, staged, entry, populated, props, update, setup, json!({}))
+}
+
+/// `describe`, with some of the populated fixture's live data replaced (`{"panes": [...]}`).
+#[allow(clippy::too_many_arguments)]
+fn describe_with(
+    cx: &mut TestAppContext,
+    staged: &Staged,
+    entry: &str,
+    populated: bool,
+    props: Value,
+    update: Value,
+    setup: Option<&str>,
+    data: Value,
+) -> anyhow::Result<String> {
     let calls = Rc::new(RefCell::new(Calls::default()));
     static NEXT_STORE: AtomicU64 = AtomicU64::new(0);
+    let mut values = fixture(populated, props, update);
+    values.extend(data.as_object().cloned().unwrap_or_default());
     let policy = Policy::new()
         .with_storage_path(staged.0.join(format!("store-{}.json", NEXT_STORE.fetch_add(1, Ordering::Relaxed))))
         .with_capabilities(Capabilities::new().storage(true).read_roots([staged.0.clone()]))
-        .with_host_module(module(fixture(populated, props, update), calls.clone()))?;
+        .with_host_module(module(values, calls.clone()))?;
     let runtime = ShellRuntime::new_isolated()?;
     let root = setup.map(|s| staged.wrapper(entry, s)).unwrap_or_else(|| staged.0.join(entry));
     let window = cx.add_window(|_, _| Empty);
@@ -449,6 +466,44 @@ fn local_state_and_overlay_initial_descriptions(cx: &mut TestAppContext) {
         describe(cx, &staged, entry, true, p, updates("current", "current"), None).unwrap();
     }
     eprintln!("18 local-state/overlay cases, each twice: {:?}", start.elapsed());
+}
+
+#[gpui::test]
+fn a_tab_whose_agent_went_into_a_worktree_shows_it(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let program =
+        json!({"key":"claude", "name":"Claude Code", "icon":null, "tint":false, "tile":null, "color":null, "shell":false, "agent":true});
+    let tab = |id: &str, index: u32, active: bool| json!({"id":id,"index":index,"name":index.to_string(),"named":false,"active":active,"status":"working","panes":1,"zoomed":false,"settled":false,"settled_at":null,"changed_at":null,"working_since":null});
+    let worktree = "/fixture/project/.claude/worktrees/fix";
+    // Tab 2's agent went into a worktree of its own; tab 1 is still in the repo.
+    let data = |second_cwd: &str| {
+        let branch = if second_cwd == worktree { "fix-login" } else { "main" };
+        json!({
+            // A space's branch is its shown tab's focused terminal's.
+            "spaces": [{"id":"s1","index":1,"name":"project","named":false,"folder":"/fixture/project","machine":null,"branch":branch,"active":true,"status":"working","tabs":[tab("tab1", 1, false), tab("tab2", 2, true)]}],
+            "panes": [
+                {"pane":"p1","terminal":"t1","tab":"tab1","title":"","cwd":"/fixture/project","branch":"main","status":"working","app":"claude-code","program":program,"focused":false,"zoomed":false},
+                {"pane":"p2","terminal":"t2","tab":"tab2","title":"","cwd":second_cwd,"branch":branch,"status":"working","app":"claude-code","program":program,"focused":true,"zoomed":false}
+            ],
+            "agents": [
+                {"address":"t1","pane":"p1","space":"s1","space_name":"project","tab":"tab1","tab_index":1,"tab_name":"1","status":"working","app":"claude-code","program":program,"title":"","seq":1,"focused":false},
+                {"address":"t2","pane":"p2","space":"s1","space_name":"project","tab":"tab2","tab_index":2,"tab_name":"2","status":"working","app":"claude-code","program":program,"title":"","seq":2,"focused":true}
+            ],
+            "machines": [{"name":null,"layout":"ready"}],
+        })
+    };
+    // What git said of each place (the fixture's git has no repos).
+    let git = format!(
+        "this.git[JSON.stringify([null, '/fixture/project'])] = {{ name: 'project', branch: 'main', ahead: 0, behind: 0, repo: JSON.stringify([null, '/fixture/project/.git']), top: JSON.stringify([null, '/fixture/project']), linked: false }};
+         this.git[JSON.stringify([null, '{worktree}'])] = {{ name: 'project', branch: 'fix-login', ahead: 0, behind: 0, repo: JSON.stringify([null, '/fixture/project/.git']), top: JSON.stringify([null, '{worktree}']), linked: true }};"
+    );
+    let spaces = describe_with(cx, &staged, "mods/spaces", true, props(), updates("current", "current"), Some(&git), data(worktree)).unwrap();
+    assert!(spaces.contains("space-s1-tab2") && spaces.contains("fix-login"), "{spaces}");
+    let here = describe_with(cx, &staged, "mods/spaces", true, props(), updates("current", "current"), Some(&git), data("/fixture/project")).unwrap();
+    assert!(!here.contains("space-s1-tab2"), "a tab in its space's checkout has no row: {here}");
+    let agents = describe_with(cx, &staged, "mods/agents", true, props(), updates("current", "current"), None, data(worktree)).unwrap();
+    assert!(agents.contains("fix-login") && !agents.contains("main"), "only the agent in the worktree names its branch: {agents}");
 }
 
 #[gpui::test]

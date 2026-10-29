@@ -681,7 +681,10 @@ has 120 programs (agents, editors, runtimes, tools, databases, infra);
   `~/.herdr/worktrees/<repo>/<branch>` on the space's machine, a constant
   at its top; the
   `spaces` sidebar nests worktree spaces under their repo's and shows each
-  space's repo, branch, ahead/behind and uncommitted changes). Shipped mods
+  space's repo, branch, ahead/behind and uncommitted changes; a tab whose
+  terminal went into a worktree no space shows (an agent that made one and
+  `cd`'d in) gets a row of its own under its space that shows that tab, and
+  the `agents` list names that branch). Shipped mods
   are Herdr's; duplicate with `mod.clone` before editing.
 
 ### Check before you finish

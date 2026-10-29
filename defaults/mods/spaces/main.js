@@ -1,4 +1,5 @@
-// Workspace spaces: stable colored avatars, worktrees under their checkout,
+// Workspace spaces: stable colored avatars, worktrees under their checkout (and
+// a tab whose agent went into a worktree of its own, under its space),
 // grouped by machine when more than one is known. After a space's name, the repo
 // its first terminal is in now, only where unusual: branch, ahead/behind. Agent state lives in the agents list, not here. Click to
 // switch, right-click for its menu, drag to reorder.
@@ -10,11 +11,21 @@ import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, set
 // Where a space is now: its first terminal's live folder, else where it was made.
 // `ps`: panes(), read once by the caller (each read copies every pane).
 function place(s, ps) {
-  const tabs = new Set((s.tabs ?? []).map((c) => c.id));
-  return ps.find((p) => tabs.has(p.tab) && p.cwd)?.cwd || s.folder;
+  return first(s.tabs ?? [], ps)?.cwd || s.folder;
+}
+// The first terminal with a live folder in these tabs.
+function first(tabs, ps) {
+  const ids = new Set(tabs.map((c) => c.id));
+  return ps.find((p) => ids.has(p.tab) && p.cwd);
 }
 const rowHeight = ({ tree }) => (tree ? 28 : 30);
 const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
+// Where a tab's agent works when that isn't where its space is (a worktree
+// of its own, perhaps), else null: only those are asked of git.
+const tabWhere = (s, tab, ps) => {
+  const p = first([tab], ps);
+  return p?.program?.agent && p.cwd !== place(s, ps) ? JSON.stringify([s.machine ?? null, p.cwd]) : null;
+};
 const base = (path) => path.replace(/\/+$/, "").split("/").pop();
 // Changes made outside Herdr (an editor's save, a commit in another app): looked
 // for this often, in repos the list shows, while the window is in front.
@@ -71,9 +82,16 @@ export default class Spaces extends View {
   // command or an agent's turn just ended (a checkout, a commit, edits), those on
   // a machine that is back, and repos in view whose fallback is due.
   due(now, sp, ps) {
-    // Moved there: what it knew of that place may be old.
+    // Moved there: what it knew of that place may be old. Tabs too: an agent
+    // that went into a worktree of its own is listed under its space.
     const at = {};
-    for (const s of sp) at[s.id] = where(s, ps);
+    for (const s of sp) {
+      at[s.id] = where(s, ps);
+      for (const tab of s.tabs ?? []) {
+        const k = tabWhere(s, tab, ps);
+        if (k) at[tab.id] = k;
+      }
+    }
     const keys = new Set(Object.values(at).filter((k) => JSON.parse(k)[1]));
     const due = new Set([...keys].filter((k) => !(k in this.git)));
     for (const [id, k] of Object.entries(at)) if (this.at[id] && this.at[id] !== k && keys.has(k)) due.add(k);
@@ -84,7 +102,7 @@ export default class Spaces extends View {
     for (const p of ps) {
       if (!p.terminal || !spaceOf[p.tab]) continue;
       busy[p.pane] = p.status === "working" || !(p.program?.shell || p.program?.agent);
-      if (this.busy[p.pane] && !busy[p.pane]) this.sameRepo(at[spaceOf[p.tab].id], keys).forEach((k) => due.add(k));
+      if (this.busy[p.pane] && !busy[p.pane]) [at[spaceOf[p.tab].id], at[p.tab]].filter(Boolean).forEach((key) => this.sameRepo(key, keys).forEach((k) => due.add(k)));
     }
     this.busy = busy;
     for (const m of machines()) {
@@ -151,7 +169,7 @@ export default class Spaces extends View {
       const common = await exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, on });
       const repo = common.stdout.trim();
       const name = repo.endsWith("/.git") ? base(repo.slice(0, -5)) : base(repo).replace(/\.git$/, "");
-      const info = { name, branch: null, ahead: 0, behind: 0, repo: JSON.stringify([on, repo]), linked: repo !== `${top.stdout.trim()}/.git` };
+      const info = { name, branch: null, ahead: 0, behind: 0, repo: JSON.stringify([on, repo]), top: JSON.stringify([on, top.stdout.trim()]), linked: repo !== `${top.stdout.trim()}/.git` };
       for (const line of r.stdout.split("\n")) {
         if (line.startsWith("# branch.head ")) info.branch = line.slice(14);
         else if (line.startsWith("# branch.ab ")) {
@@ -196,22 +214,39 @@ export default class Spaces extends View {
     const list = sp.map((w, i) => ({ w, i, g: this.git[where(w, ps)] ?? null })).filter((r) => this.shown.has(r.w.id));
     const mains = new Set(list.filter((r) => r.g && !r.g.linked).map((r) => r.g.repo));
     const nested = (r) => r.g?.linked && mains.has(r.g.repo);
+    // A space's tabs in a worktree it doesn't show itself, and no space does
+    // (an agent that made one and went in): each worktree once, under that
+    // space, as its shown tab if that's one of them.
+    const tops = new Set(list.map((r) => r.g?.top).filter(Boolean));
+    const away = (r) => {
+      const rows = new Map();
+      for (const tab of r.w.tabs ?? []) {
+        const g = this.git[tabWhere(r.w, tab, ps)];
+        if (g?.linked && !tops.has(g.top) && (!rows.has(g.top) || tab.active)) rows.set(g.top, { w: r.w, i: r.i, g, tab });
+      }
+      return [...rows.values()];
+    };
     const out = [];
     const placed = new Set(); // repos whose worktrees are listed (under the first of its spaces)
     for (const r of list) {
       if (nested(r)) continue;
-      out.push({ ...r, tree: null });
-      if (!r.g || r.g.linked || placed.has(r.g.repo)) continue;
-      placed.add(r.g.repo);
-      const kids = list.filter((k) => nested(k) && k.g.repo === r.g.repo);
-      kids.forEach((k, n) => out.push({ ...k, tree: n === kids.length - 1 ? "└─" : "├─" }));
+      const kids = away(r);
+      if (r.g && !r.g.linked && !placed.has(r.g.repo)) {
+        placed.add(r.g.repo);
+        for (const k of list.filter((k) => nested(k) && k.g.repo === r.g.repo)) kids.push(k, ...away(k));
+      }
+      // Lit: the shown space, or its tab row when the shown tab has one.
+      const on = (k) => k.w.active && (k.tab ? k.tab.active : !kids.some((o) => o.tab?.active && o.w.id === k.w.id));
+      out.push({ ...r, tree: null, on: on(r) });
+      kids.forEach((k, n) => out.push({ ...k, tree: n === kids.length - 1 ? "└─" : "├─", on: on(k) }));
     }
     return out;
   }
 
   // The rows, under a header per machine once one isn't this computer.
   grouped(t, collapsed) {
-    const rows = this.ordered();
+    // Collapsed, a number per space: tabs go.
+    const rows = this.ordered().filter((r) => !collapsed || !r.tab);
     const draw = (r) => (collapsed ? this.compact(r, t) : this.row(r, t));
     const remote = [...new Set([...rows.map(r => r.w.machine).filter(Boolean), ...this.machines.map(m => m.name)])].sort();
     const loading = m => {
@@ -271,14 +306,16 @@ export default class Spaces extends View {
       .when(g.behind > 0, (el) => el.child(div().flex_none().text_color(t.ansi1).child(`\u2193${g.behind}`)));
   }
 
-  row({ w, i, g, tree }, t) {
-    const on = w.active;
+  // A space, or (`tab`) one of its tabs in a worktree of its own: named after
+  // the checkout's folder like a worktree space, and it shows that tab.
+  row({ w, i, g, tree, tab, on }, t) {
     const colors = shared("space.colors") ?? {};
     const color = colors[w.id] ?? "ansi6";
     const fill = color.startsWith("#") ? color : (MARK[color] ?? t[color]);
+    const name = tab ? base(JSON.parse(g.top)[1]) : w.name;
     return v_flex()
       .relative()
-      .id(`space-${w.id}`)
+      .id(tab ? `space-${w.id}-${tab.id}` : `space-${w.id}`)
       .px(8)
       .h(rowHeight({ tree }))
       .flex_none()
@@ -286,27 +323,29 @@ export default class Spaces extends View {
       .rounded(8)
       .when(on, (el) => el.bg(t.selected))
       .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
-      .when(this.pressed !== null && this.over === i && this.pressed !== i, (el) => el.border_t(2).border_color(t.accent))
-      .on_mouse_down("left", () => {
-        this.pressed = i;
-        this.over = i;
-      })
-      .on_mouse_up("left", (_e, cx) => {
-        const from = this.pressed;
-        this.pressed = null;
-        if (from !== null && from !== i) run("space.move", { id: spaces()[from].id, index: i + 1 });
-        else run("space.select", { id: w.id });
-        cx.notify();
-      })
-      .on_mouse_down("right", () => this.menu(w))
+      .when(Boolean(tab), (el) => el.on_click(() => run("tab.select", { id: tab.id })))
+      .when(!tab, (el) => el
+        .when(this.pressed !== null && this.over === i && this.pressed !== i, (el) => el.border_t(2).border_color(t.accent))
+        .on_mouse_down("left", () => {
+          this.pressed = i;
+          this.over = i;
+        })
+        .on_mouse_up("left", (_e, cx) => {
+          const from = this.pressed;
+          this.pressed = null;
+          if (from !== null && from !== i) run("space.move", { id: spaces()[from].id, index: i + 1 });
+          else run("space.select", { id: w.id });
+          cx.notify();
+        })
+        .on_mouse_down("right", () => this.menu(w)))
       .child(
         h_flex()
           .gap(9)
           .items_center()
           .when(Boolean(tree), el => el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).text_color(t.dim)))
           .when(!tree, el => el.child(h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff").child(w.name[0]?.toUpperCase() ?? "?")))
-          .child(div().flex_shrink(0).max_w(150).truncate().text_color(t.foreground).child(w.name))
-          .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1()),
+          .child(div().flex_shrink(0).max_w(150).truncate().text_color(t.foreground).child(name))
+          .child(g ? this.gitTail(g, tree, name, t) : div().flex_1()),
       );
   }
 

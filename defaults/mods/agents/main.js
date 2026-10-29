@@ -241,15 +241,24 @@ export default class Agents extends View {
         .when(!open, (el) => el.child(String(subs.length)));
     };
 
-    // A row reads "space \u00b7 detail": the detail is a tab someone named or the
-    // agent's own title, never an automatic tab number unless two rows would
-    // otherwise read the same.
-    const tabs = spaces().flatMap(s => s.tabs);
+    // A row reads "space \u00b7 detail": the detail is a tab someone named, the
+    // branch the agent went to when it isn't its space's (a worktree of its own),
+    // or the agent's own title, never an automatic tab number unless two rows
+    // would otherwise read the same.
+    const sp = spaces(), ps = panes();
+    const tabs = sp.flatMap(s => s.tabs);
     const label = (a) => {
       const tab = tabs.find(tab => tab.id === a.tab);
       return tab ? title(tab, lead(tab)) : a.title || a.program?.name || "";
     };
-    const detail = new Map(list.map(a => [a.address, /^\d+$/.test(label(a)) ? null : label(a)]));
+    // A space's checkout is its first terminal's (as its name is).
+    const first = (s) => ps.find(p => s?.tabs.some(tab => tab.id === p.tab) && p.cwd);
+    const away = (a) => {
+      const branch = ps.find(p => p.pane === a.pane)?.branch;
+      const home = first(sp.find(s => s.id === a.space))?.branch;
+      return branch && home && branch !== home ? branch : null;
+    };
+    const detail = new Map(list.map(a => [a.address, tabs.find(tab => tab.id === a.tab)?.named ? label(a) : away(a) ?? (/^\d+$/.test(label(a)) ? null : label(a))]));
     const seen = {};
     for (const a of list) { const k = `${a.space_name}\u0000${detail.get(a.address) ?? ""}`; seen[k] = (seen[k] ?? 0) + 1; }
     for (const a of list) {
