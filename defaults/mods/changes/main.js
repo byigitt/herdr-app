@@ -1,4 +1,4 @@
-import { View, div } from "gpui-kit";
+import { View, div, list } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings } from "herdr";
 
@@ -28,6 +28,7 @@ function diffRows(lines) {
 export default class Changes extends View {
   init(_props, cx) {
     this.files = []; this.rows = []; this.diffWidth = 0; this.message = ""; this.handle = cx.focus_handle();
+    this.wrap = localStorage.getItem("wrap") === "true";
     this.input = InputState.new({ placeholder: "Commit message" });
     this.input.on("change", (_e, cx) => { this.message = this.input.value(); cx.notify(); });
     this.input.on("submit", (_e, cx) => this.commit(cx));
@@ -158,11 +159,26 @@ export default class Changes extends View {
     cx.notify();
   }
 
+  toggleWrap(cx) {
+    this.wrap = !this.wrap;
+    localStorage.setItem("wrap", String(this.wrap));
+    cx.notify();
+  }
+
+  // Wrapped rows grow to fit their text; unwrapped rows stay one line and scroll sideways.
   diffRow({ kind, number, text }, t) {
-    if (kind === "@") return div().w_full().px(12).h(20).flex_none().truncate().bg(t.raised).text_color(t.dim).child(text);
-    return h_flex().w_full().h(20).flex_none().gap(10).when(kind === "+", (e) => e.bg(t.ansi2 + "18")).when(kind === "-", (e) => e.bg(t.ansi1 + "18"))
-      .child(div().w(30).flex_none().text_right().text_color(t.dim).child(number === undefined ? "" : String(number)))
-      .child(div().flex_1().min_w(0).truncate().child(text));
+    const line = (e) => this.wrap ? e.min_h(20).line_height("20px") : e.h(20).truncate();
+    if (kind === "@") return line(div().w_full().px(12).flex_none().bg(t.raised).text_color(t.dim)).child(text);
+    return h_flex().w_full().flex_none().items_start().gap(10).when(kind === "+", (e) => e.bg(t.ansi2 + "18")).when(kind === "-", (e) => e.bg(t.ansi1 + "18"))
+      .child(div().w(30).h(20).flex_none().text_right().line_height("20px").text_color(t.dim).child(number === undefined ? "" : String(number)))
+      .child(line(div().flex_1().min_w(0)).child(text));
+  }
+
+  diff(t) {
+    if (this.wrap) return list("changes-diff", this.rows.length, (i) => String(i), (i) => this.diffRow(this.rows[i], t)).size_full();
+    return div().id("changes-diff-x").size_full().overflow_x_scrollbar()
+      .child(div().w_full().min_w(this.diffWidth).h_full().child(v_virtual_list("changes-diff", this.rows.length, 20, (i) => String(i),
+        (range) => this.rows.slice(range.start, range.end).map((row) => this.diffRow(row, t))).size_full()));
   }
 
   render(cx) {
@@ -176,7 +192,9 @@ export default class Changes extends View {
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().font_semibold().child("Changes"))
         .child(div().px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.muted).child(`${this.files.length} files`))
-        .child(div().flex_1()).child(div().text_size(11).text_color(t.ansi2).child(`+${add}`)).child(div().text_size(11).text_color(t.ansi1).child(`−${del}`)))
+        .child(div().flex_1())
+        .child(div().id("changes-wrap").px(5).py(1).rounded(4).border_1().border_color(this.wrap ? t.accent : t.border).text_size(10).text_color(this.wrap ? t.foreground : t.muted).cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.toggleWrap(cx)).child("Wrap"))
+        .child(div().text_size(11).text_color(t.ansi2).child(`+${add}`)).child(div().text_size(11).text_color(t.ansi1).child(`−${del}`)))
       .child(v_flex().id("changes-list").flex_none().h(Math.min(200, Math.max(44, this.files.length * 28 + 12))).overflow_y_scrollbar().p(6).border_b(1).border_color(t.border).children(this.files.map((f) => {
         const parts = f.path.split("/"), name = parts.pop();
         return h_flex().id(`change-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.pick(f.path, cx))
@@ -186,9 +204,7 @@ export default class Changes extends View {
       })).when(!this.files.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error || (this.loading ? "Loading changes…" : this.root ? "No uncommitted changes" : "No folder")))))
       .when(this.limited, el => el.child(div().px(12).py(4).text_size(11).text_color(t.dim).child("Showing the first 1,000 changed files")))
       .child(div().flex_1().min_h(0).relative().font_family(settings().font_family ?? "JetBrains Mono").text_size(11)
-        .child(div().id("changes-diff-x").size_full().overflow_x_scrollbar()
-          .child(div().w_full().min_w(this.diffWidth).h_full().child(v_virtual_list("changes-diff", this.rows.length, 20, (i) => String(i),
-            (range) => this.rows.slice(range.start, range.end).map((row) => this.diffRow(row, t))).size_full())))
+        .child(this.diff(t))
         .child(Scrollbar.vertical("changes-diff").viewport_from_layout().absolute().inset_0())
         .when(!this.open && this.files.length > 0, (e) => e.child(div().absolute().top(6).px(12).text_color(t.dim).child("Select a file to view its changes"))))
       .when(Boolean(this.note), (e) => e.child(div().px(10).pb(8).text_size(11).text_color(t.ansi1).child(this.note)))

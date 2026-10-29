@@ -422,6 +422,21 @@ fn local_state_and_overlay_initial_descriptions(cx: &mut TestAppContext) {
         let expected = if query == "settings" { "Settings" } else { "Nothing matches" };
         assert!(tree.contains(expected), "palette query {query}: {tree}");
     }
+    for wrap in [false, true] {
+        let tree = describe(
+            cx,
+            &staged,
+            "mods/changes",
+            true,
+            props(),
+            updates("current", "current"),
+            Some(&format!("this.wrap = {wrap}; this.setLines(['@@ -1 +1 @@', '-old line', '+' + 'long '.repeat(200)]);")),
+        )
+        .unwrap();
+        // Wrapped rows are measured by `list`; unwrapped ones scroll sideways in a virtual list.
+        let rows = if wrap { " list \"changes-diff\" ×3" } else { "v_virtual_list \"changes-diff\" ×3" };
+        assert!(tree.contains("\"Wrap\"") && tree.contains(rows) && tree.contains("changes-diff-x") != wrap, "changes wrap {wrap}: {tree}");
+    }
     // Reviewed overlay contract table, not extracted from arbitrary JS call sites.
     let scenarios = [
         ("mods/menu", json!({"tab":"pane","target":{"pane":"p1","terminal":"t1"}})),
@@ -448,7 +463,7 @@ fn local_state_and_overlay_initial_descriptions(cx: &mut TestAppContext) {
         p.as_object_mut().unwrap().extend(patch.as_object().unwrap().clone());
         describe(cx, &staged, entry, true, p, updates("current", "current"), None).unwrap();
     }
-    eprintln!("18 local-state/overlay cases, each twice: {:?}", start.elapsed());
+    eprintln!("20 local-state/overlay cases, each twice: {:?}", start.elapsed());
 }
 
 #[gpui::test]
